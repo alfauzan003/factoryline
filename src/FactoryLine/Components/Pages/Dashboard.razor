@@ -1,0 +1,108 @@
+@page "/"
+@implements IAsyncDisposable
+
+<PageTitle>FactoryLine — Live equipment dashboard</PageTitle>
+
+<h1>Live equipment dashboard</h1>
+<p class="muted">
+    Equipment states are produced by the line simulator and flow through the equipment bridge
+    (normalize → persist to SQL Server → SignalR). Updates appear here without a page refresh.
+</p>
+
+<div class="controls">
+    <button class="btn" disabled="@(_running)" @onclick="StartLine">Start line</button>
+    <button class="btn btn-danger" disabled="@(!_running)" @onclick="StopLine">Stop line</button>
+</div>
+
+@if (_states is null)
+{
+    <p class="muted">Loading…</p>
+}
+else if (_states.Count == 0)
+{
+    <p class="muted">No equipment configured. Check the <code>LineSimulator:EquipmentCount</code> setting.</p>
+}
+else
+{
+    <table class="equipment-table">
+        <thead>
+            <tr>
+                <th>Equipment</th>
+                <th>State</th>
+                <th>Changed at</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var state in _states)
+            {
+                <tr>
+                    <td>@state.EquipmentId</td>
+                    <td><span class="badge badge-@state.State">@state.State</span></td>
+                    <td>@state.ChangedAt.ToLocalTime().ToString("HH:mm:ss")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private HubConnection? _hub;
+    private List<EquipmentStateSnapshot> _states = new();
+    private bool _running;
+
+    [Inject]
+    private IEquipmentSource Source { get; set; } = default!;
+
+    [Inject]
+    private NavigationManager Navigation { get; set; } = default!;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _running = Source.IsRunning;
+
+        var current = await Source.GetCurrentStatesAsync();
+        _states = current.ToList();
+
+        _hub = new HubConnectionBuilder()
+            .WithUrl(Navigation.ToAbsoluteUri("/equipmenthub"))
+            .Build();
+
+        _hub.On<EquipmentStateChange>("EquipmentStateChanged", change =>
+        {
+            var snapshot = new EquipmentStateSnapshot(change.EquipmentId, change.State, change.Timestamp);
+            var index = _states.FindIndex(s => s.EquipmentId == snapshot.EquipmentId);
+            if (index >= 0)
+            {
+                _states[index] = snapshot;
+            }
+            else
+            {
+                _states.Add(snapshot);
+            }
+
+            InvokeAsync(StateHasChanged);
+        });
+
+        await _hub.StartAsync();
+    }
+
+    private async Task StartLine()
+    {
+        await Source.StartAsync();
+        _running = Source.IsRunning;
+    }
+
+    private async Task StopLine()
+    {
+        await Source.StopAsync();
+        _running = Source.IsRunning;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hub is not null)
+        {
+            await _hub.DisposeAsync();
+        }
+    }
+}
