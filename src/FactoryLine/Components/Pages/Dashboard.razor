@@ -1,5 +1,7 @@
 @page "/"
 @implements IAsyncDisposable
+@using FactoryLine.Data
+@using FactoryLine.Services
 
 <PageTitle>FactoryLine — Live equipment dashboard</PageTitle>
 
@@ -45,10 +47,54 @@ else
     </table>
 }
 
+<h2>Work orders</h2>
+<p class="muted">
+    Create a work order; the equipment holds in WAIT_MATERIAL until the arrival callback for its
+    required material releases the gate, then production auto-starts.
+</p>
+
+<div class="wo-form">
+    <input class="input" placeholder="Product code" @bind="_productCode" />
+    <input class="input" placeholder="Required material" @bind="_requiredMaterial" />
+    <input class="input" placeholder="Equipment (e.g. EQ-01)" @bind="_equipmentId" />
+    <button class="btn" @onclick="CreateWorkOrder">Create work order</button>
+</div>
+
+@if (_workOrders is not null)
+{
+    <table class="equipment-table">
+        <thead>
+            <tr>
+                <th>Work order</th>
+                <th>Product</th>
+                <th>Material</th>
+                <th>Equipment</th>
+                <th>State</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var wo in _workOrders)
+            {
+                <tr>
+                    <td>@wo.Id[..8]</td>
+                    <td>@wo.ProductCode</td>
+                    <td>@wo.RequiredMaterialId</td>
+                    <td>@wo.EquipmentId</td>
+                    <td><span class="badge badge-@wo.State">@wo.State</span></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
 @code {
     private HubConnection? _hub;
     private List<EquipmentStateSnapshot> _states = new();
+    private List<WorkOrderRow> _workOrders = new();
     private bool _running;
+    private string _productCode = "BAT-100";
+    private string _requiredMaterial = "CELL-X";
+    private string _equipmentId = "EQ-01";
 
     [Inject]
     private IEquipmentSource Source { get; set; } = default!;
@@ -56,12 +102,17 @@ else
     [Inject]
     private NavigationManager Navigation { get; set; } = default!;
 
+    [Inject]
+    private MiniMesService MiniMes { get; set; } = default!;
+
     protected override async Task OnInitializedAsync()
     {
         _running = Source.IsRunning;
 
         var current = await Source.GetCurrentStatesAsync();
         _states = current.ToList();
+
+        _workOrders = await MiniMes.GetWorkOrdersAsync();
 
         _hub = new HubConnectionBuilder()
             .WithUrl(Navigation.ToAbsoluteUri("/equipmenthub"))
@@ -96,6 +147,12 @@ else
     {
         await Source.StopAsync();
         _running = Source.IsRunning;
+    }
+
+    private async Task CreateWorkOrder()
+    {
+        await MiniMes.CreateWorkOrderAsync(new CreateWorkOrderRequest(_productCode, _requiredMaterial, _equipmentId));
+        _workOrders = await MiniMes.GetWorkOrdersAsync();
     }
 
     public async ValueTask DisposeAsync()

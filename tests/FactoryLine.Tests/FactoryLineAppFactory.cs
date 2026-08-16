@@ -8,6 +8,8 @@ namespace FactoryLine.Tests;
 
 public class FactoryLineAppFactory : WebApplicationFactory<Program>
 {
+    private readonly string _dbName = $"FactoryLineTestDb_{Guid.NewGuid():N}";
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting("LineSimulator:EquipmentCount", "3");
@@ -24,7 +26,7 @@ public class FactoryLineAppFactory : WebApplicationFactory<Program>
             }
 
             services.AddDbContext<FactoryLineDbContext>(options =>
-                options.UseInMemoryDatabase("FactoryLineTestDb"));
+                options.UseInMemoryDatabase(_dbName));
         });
     }
 }

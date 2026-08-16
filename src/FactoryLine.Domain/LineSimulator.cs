@@ -8,22 +8,26 @@ namespace FactoryLine.Domain;
 /// Each equipment runs its own state machine on a visible schedule
 /// (Idle → Running → Completed → Idle), raising <see cref="StateChanged"/>
 /// on every transition. Used as the demo driver; OPC-UA is a second adapter of
-/// the same contract.
+/// the same contract. An optional <see cref="IEquipmentGate"/> lets the
+/// mini-MES hold an equipment in WAIT_MATERIAL: a held equipment moves to
+/// Waiting and stops advancing until the gate releases it.
 /// </summary>
 public sealed class LineSimulator : IEquipmentSource, IAsyncDisposable
 {
     private readonly ILogger<LineSimulator> _logger;
     private readonly LineSimulatorOptions _options;
-    private readonly object _gate = new();
+    private readonly IEquipmentGate? _gate;
+    private readonly object _gateLock = new();
     private readonly List<EquipmentMachine> _machines;
     private CancellationTokenSource? _cts;
     private Task? _runTask;
     private bool _running;
 
-    public LineSimulator(IOptions<LineSimulatorOptions> options, ILogger<LineSimulator> logger)
+    public LineSimulator(IOptions<LineSimulatorOptions> options, ILogger<LineSimulator> logger, IEquipmentGate? gate = null)
     {
         _options = options.Value;
         _logger = logger;
+        _gate = gate;
 
         _machines = Enumerable.Range(1, _options.EquipmentCount)
             .Select(i => new EquipmentMachine($"EQ-{i:00}"))
@@ -34,7 +38,7 @@ public sealed class LineSimulator : IEquipmentSource, IAsyncDisposable
     {
         get
         {
-            lock (_gate)
+            lock (_gateLock)
             {
                 return _running;
             }
@@ -45,7 +49,7 @@ public sealed class LineSimulator : IEquipmentSource, IAsyncDisposable
 
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
-        lock (_gate)
+        lock (_gateLock)
         {
             if (_running)
             {
@@ -64,7 +68,7 @@ public sealed class LineSimulator : IEquipmentSource, IAsyncDisposable
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         Task? runTask;
-        lock (_gate)
+        lock (_gateLock)
         {
             if (!_running)
             {
@@ -92,7 +96,7 @@ public sealed class LineSimulator : IEquipmentSource, IAsyncDisposable
 
     public Task<IReadOnlyList<EquipmentStateSnapshot>> GetCurrentStatesAsync(CancellationToken cancellationToken = default)
     {
-        lock (_gate)
+        lock (_gateLock)
         {
             return Task.FromResult<IReadOnlyList<EquipmentStateSnapshot>>(
                 _machines.Select(m => m.Snapshot).ToList());
@@ -127,9 +131,10 @@ public sealed class LineSimulator : IEquipmentSource, IAsyncDisposable
                 await Task.Delay(tick, token).ConfigureAwait(false);
 
                 EquipmentStateChange change;
-                lock (_gate)
+                lock (_gateLock)
                 {
-                    change = machine.Advance();
+                    var held = _gate?.IsHeld(machine.Id) ?? false;
+                    change = held ? machine.Hold() : machine.Advance();
                 }
 
                 _logger.LogInformation("Equipment {EquipmentId} -> {State}", change.EquipmentId, change.State);
@@ -159,10 +164,21 @@ public sealed class LineSimulator : IEquipmentSource, IAsyncDisposable
             _state = _state switch
             {
                 EquipmentState.Idle => EquipmentState.Running,
+                EquipmentState.Waiting => EquipmentState.Running,
                 EquipmentState.Running => EquipmentState.Completed,
                 EquipmentState.Completed => EquipmentState.Idle,
                 _ => EquipmentState.Running,
             };
+
+            return new EquipmentStateChange(Id, _state, DateTimeOffset.UtcNow);
+        }
+
+        public EquipmentStateChange Hold()
+        {
+            if (_state != EquipmentState.Waiting)
+            {
+                _state = EquipmentState.Waiting;
+            }
 
             return new EquipmentStateChange(Id, _state, DateTimeOffset.UtcNow);
         }
