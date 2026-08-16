@@ -47,35 +47,44 @@ public sealed class OpcUaEquipmentSource : IEquipmentSource, IAsyncDisposable
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
-        var session = await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
-        var nsIndex = (ushort)session.NamespaceUris.GetIndex(SimulatorUaServer.NamespaceUri);
-        await session.CallAsync(new NodeId("Simulator", nsIndex), new NodeId("Simulator/Start", nsIndex), cancellationToken).ConfigureAwait(false);
+        var session = await GetSessionAsync(cancellationToken).ConfigureAwait(false);
 
         lock (_gate)
         {
             _isRunning = true;
         }
 
+        if (_subscription is null)
+        {
+            await SubscribeAsync(session, cancellationToken).ConfigureAwait(false);
+        }
+
+        var nsIndex = (ushort)session.NamespaceUris.GetIndex(SimulatorUaServer.NamespaceUri);
+        await session.CallAsync(new NodeId("Simulator", nsIndex), new NodeId("Simulator/Start", nsIndex), cancellationToken).ConfigureAwait(false);
+
         _logger.LogInformation("OPC-UA adapter started the line via Simulator/Start");
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        var session = await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
-        var nsIndex = (ushort)session.NamespaceUris.GetIndex(SimulatorUaServer.NamespaceUri);
-        await session.CallAsync(new NodeId("Simulator", nsIndex), new NodeId("Simulator/Stop", nsIndex), cancellationToken).ConfigureAwait(false);
+        var session = await GetSessionAsync(cancellationToken).ConfigureAwait(false);
 
         lock (_gate)
         {
             _isRunning = false;
         }
 
+        var nsIndex = (ushort)session.NamespaceUris.GetIndex(SimulatorUaServer.NamespaceUri);
+        await session.CallAsync(new NodeId("Simulator", nsIndex), new NodeId("Simulator/Stop", nsIndex), cancellationToken).ConfigureAwait(false);
+
+        await TearDownSubscriptionAsync(cancellationToken).ConfigureAwait(false);
+
         _logger.LogInformation("OPC-UA adapter stopped the line via Simulator/Stop");
     }
 
     public async Task<IReadOnlyList<EquipmentStateSnapshot>> GetCurrentStatesAsync(CancellationToken cancellationToken = default)
     {
-        var session = await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
+        var session = await GetSessionAsync(cancellationToken).ConfigureAwait(false);
         var nsIndex = (ushort)session.NamespaceUris.GetIndex(SimulatorUaServer.NamespaceUri);
 
         var snapshots = new List<EquipmentStateSnapshot>();
@@ -127,11 +136,11 @@ public sealed class OpcUaEquipmentSource : IEquipmentSource, IAsyncDisposable
         }
     }
 
-    private async Task<ISession> EnsureConnectedAsync(CancellationToken cancellationToken)
+    private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
     {
         if (_session is not null && _session.Connected)
         {
-            return _session;
+            return;
         }
 
         lock (_gate)
@@ -207,8 +216,12 @@ public sealed class OpcUaEquipmentSource : IEquipmentSource, IAsyncDisposable
         _logger.LogInformation("OPC-UA adapter connected to {EndpointUrl}", _endpointUrl);
 
         await SubscribeAsync(session, cancellationToken).ConfigureAwait(false);
+    }
 
-        return session;
+    private async Task<ISession> GetSessionAsync(CancellationToken cancellationToken)
+    {
+        await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
+        return _session!;
     }
 
     private async Task SubscribeAsync(ISession session, CancellationToken cancellationToken)
@@ -265,6 +278,11 @@ public sealed class OpcUaEquipmentSource : IEquipmentSource, IAsyncDisposable
 
         lock (_gate)
         {
+            if (!_isRunning)
+            {
+                return;
+            }
+
             var index = _states.FindIndex(s => s.EquipmentId == equipmentId);
             if (index >= 0)
             {
@@ -277,6 +295,30 @@ public sealed class OpcUaEquipmentSource : IEquipmentSource, IAsyncDisposable
         }
 
         StateChanged?.Invoke(this, new EquipmentStateChange(equipmentId, state, timestamp));
+    }
+
+    private async Task TearDownSubscriptionAsync(CancellationToken cancellationToken)
+    {
+        Subscription? subscription;
+        lock (_gate)
+        {
+            subscription = _subscription;
+            _subscription = null;
+        }
+
+        if (subscription is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await subscription.DeleteAsync(true, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to delete OPC-UA subscription on stop.");
+        }
     }
 
     private void OnKeepAlive(ISession session, KeepAliveEventArgs e)
