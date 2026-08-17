@@ -63,6 +63,8 @@ using (var scope = app.Services.CreateScope())
 
 app.UseStaticFiles();
 
+app.UseAntiforgery();
+
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 

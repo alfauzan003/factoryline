@@ -19,4 +19,12 @@ public class HealthEndpointTests : IClassFixture<FactoryLineAppFactory>
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
+
+    [Fact]
+    public async Task Dashboard_ReturnsOk()
+    {
+        var response = await _client.GetAsync("/");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
 }

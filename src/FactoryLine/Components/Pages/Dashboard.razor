@@ -114,27 +114,42 @@ else
 
         _workOrders = await MiniMes.GetWorkOrdersAsync();
 
-        _hub = new HubConnectionBuilder()
-            .WithUrl(Navigation.ToAbsoluteUri("/equipmenthub"))
-            .Build();
-
-        _hub.On<EquipmentStateChange>("EquipmentStateChanged", change =>
+        try
         {
-            var snapshot = new EquipmentStateSnapshot(change.EquipmentId, change.State, change.Timestamp);
-            var index = _states.FindIndex(s => s.EquipmentId == snapshot.EquipmentId);
-            if (index >= 0)
-            {
-                _states[index] = snapshot;
-            }
-            else
-            {
-                _states.Add(snapshot);
-            }
+            _hub = new HubConnectionBuilder()
+                .WithUrl(Navigation.ToAbsoluteUri("/equipmenthub"))
+                .Build();
 
-            InvokeAsync(StateHasChanged);
-        });
+            _hub.On<EquipmentStateChange>("EquipmentStateChanged", change =>
+            {
+                var snapshot = new EquipmentStateSnapshot(change.EquipmentId, change.State, change.Timestamp);
+                var index = _states.FindIndex(s => s.EquipmentId == snapshot.EquipmentId);
+                if (index >= 0)
+                {
+                    _states[index] = snapshot;
+                }
+                else
+                {
+                    _states.Add(snapshot);
+                }
 
-        await _hub.StartAsync();
+                InvokeAsync(StateHasChanged);
+            });
+
+            await _hub.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            // Live updates are best-effort: if the hub is unreachable (e.g. during
+            // prerender or when SignalR is down), the page still renders the current
+            // states from the source.
+            Console.WriteLine($"Could not connect to equipment hub: {ex.Message}");
+            if (_hub is not null)
+            {
+                await _hub.DisposeAsync();
+                _hub = null;
+            }
+        }
     }
 
     private async Task StartLine()
